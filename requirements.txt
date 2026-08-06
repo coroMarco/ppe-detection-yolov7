@@ -1,4 +1,5 @@
-# Usage:
+# Usage: pip install -r requirements.txt
+
 # Base ----------------------------------------
 matplotlib>=3.2.2
 numpy>=1.18.5

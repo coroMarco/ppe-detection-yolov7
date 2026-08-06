@@ -147,6 +147,37 @@ class FocalLoss(nn.Module):
         else:  # 'none'
             return loss
 
+class ClassWeightedFocalLoss(nn.Module):
+    # Wraps focal loss with per-class alpha weighting around existing loss function 
+    def __init__(self, loss_fcn, gamma=2.0, alpha=None):
+        super(ClassWeightedFocalLoss, self).__init__()
+        self.loss_fcn = loss_fcn
+        self.gamma = gamma
+        self.alpha = alpha  # Expected to be a 1D tensor of shape [num_classes]
+        self.reduction = loss_fcn.reduction
+        self.loss_fcn.reduction = 'none'
+
+    def forward(self, pred, true):
+        loss = self.loss_fcn(pred, true)
+        
+        pred_prob = torch.sigmoid(pred)
+        p_t = true * pred_prob + (1 - true) * (1 - pred_prob)
+        modulating_factor = (1.0 - p_t) ** self.gamma
+        
+        if self.alpha is not None:
+            if self.alpha.device != pred.device:
+                self.alpha = self.alpha.to(pred.device)
+            alpha_factor = true * self.alpha + (1 - true) * (1.0 - self.alpha)
+            loss *= alpha_factor
+        
+        loss *= modulating_factor
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
 
 class QFocalLoss(nn.Module):
     # Wraps Quality focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)
@@ -419,6 +450,8 @@ class APLoss(torch.autograd.Function):
         return g1*out_grad1, None, None
 
 
+
+
 class ComputeLoss:
     # Compute losses
     def __init__(self, model, autobalance=False):
@@ -430,13 +463,23 @@ class ComputeLoss:
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
 
-        # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
-        self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
-
-        # Focal loss
-        g = h['fl_gamma']  # focal loss gamma
+        # Class label smoothing
+        self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))
+        
+        # 3B MODIFICATION: Class-Weighted Focal Loss
+        # Generate these alpha weights using the script provided earlier based on your dataset
+        # For now, these are placeholder values (e.g., 1.0 for all 14 classes)
+        num_classes = model.module.model[-1].nc if is_parallel(model) else model.model[-1].nc
+        alpha_weights = torch.ones(num_classes, device=device) 
+        
+        # Wrap BCEcls with the custom loss function
+        BCEcls = ClassWeightedFocalLoss(BCEcls, gamma=1.5, alpha=alpha_weights)
+        
+        # Keep standard focal loss logic for objectness if configured in hyperparameters
+        g = h['fl_gamma']
         if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            BCEobj = FocalLoss(BCEobj, g)
+
 
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
@@ -560,17 +603,25 @@ class ComputeLossOTA:
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
 
+        # 3B MODIFICATION: Class-Weighted Focal Loss 
+        num_classes = model.module.model[-1].nc if is_parallel(model) else model.model[-1].nc
+
+        #placeholder alpha weights for each class, they should be replaced with actual class weights
+        alpha_weights = torch.ones(num_classes, device=device) 
+        
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        BCEcls = ClassWeightedFocalLoss(BCEcls, gamma=1.5, alpha=alpha_weights)
+        
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
+        
+        # Class label smoothing
+        self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))
 
-        # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
-        self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
-
-        # Focal loss
-        g = h['fl_gamma']  # focal loss gamma
+        # Standard focal loss for objectness
+        g = h['fl_gamma']
         if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            BCEobj = FocalLoss(BCEobj, g)
 
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
