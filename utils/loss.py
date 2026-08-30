@@ -149,7 +149,7 @@ class FocalLoss(nn.Module):
 
 class ClassWeightedFocalLoss(nn.Module):
     # Wraps focal loss with per-class alpha weighting around existing loss function 
-    def __init__(self, loss_fcn, gamma=2.0, alpha=None):
+    def __init__(self, loss_fcn, gamma=1.5, alpha=None):
         super(ClassWeightedFocalLoss, self).__init__()
         self.loss_fcn = loss_fcn
         self.gamma = gamma
