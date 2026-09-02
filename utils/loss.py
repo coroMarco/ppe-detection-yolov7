@@ -461,7 +461,7 @@ class ComputeLoss:
 
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
-        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
+        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device), reduction='none')
 
         # Class label smoothing
         self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))
@@ -525,8 +525,16 @@ class ComputeLoss:
                 # with open('targets.txt', 'a') as file:
                 #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
 
-            obji = self.BCEobj(pi[..., 4], tobj)
+            # --- LOSS MASKING MODIFICATION ---
+            raw_obj_loss = self.BCEobj(pi[..., 4], tobj)
+
+            # Create mask: 1.0 for annotated targets, 0.05 for background (forgives 95% of background noise)
+            obj_mask = torch.ones_like(tobj)
+            obj_mask[tobj == 0] = 0.05 
+
+            obji = (raw_obj_loss * obj_mask).mean()
             lobj += obji * self.balance[i]  # obj loss
+            # ---------------------------------
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
 
@@ -613,7 +621,7 @@ class ComputeLossOTA:
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
         BCEcls = ClassWeightedFocalLoss(BCEcls, gamma=1.5, alpha=alpha_weights)
         
-        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
+        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device), reduction='none')
         
         # Class label smoothing
         self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))
@@ -671,8 +679,16 @@ class ComputeLossOTA:
                 # with open('targets.txt', 'a') as file:
                 #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
 
-            obji = self.BCEobj(pi[..., 4], tobj)
+            # --- LOSS MASKING MODIFICATION ---
+            raw_obj_loss = self.BCEobj(pi[..., 4], tobj)
+
+            # Create mask: 1.0 for annotated targets, 0.05 for background (forgives 95% of background noise)
+            obj_mask = torch.ones_like(tobj)
+            obj_mask[tobj == 0] = 0.05 
+
+            obji = (raw_obj_loss * obj_mask).mean()
             lobj += obji * self.balance[i]  # obj loss
+            # ---------------------------------
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
 
