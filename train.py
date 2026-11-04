@@ -356,13 +356,45 @@ def train(hyp, opt, device, tb_writer=None):
                     ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
+            # Dynamic loss masking, based on the prefix of the image filename
+            loss_mask = torch.ones((imgs.shape[0], nc), device=device)
+            for b_idx, path in enumerate(paths):
+                fname = os.path.basename(path)
+                valid = [11]  # Person class is always valid
+                
+                if fname.startswith('eye_protection'): valid.extend([2, 7])
+                elif fname.startswith('safety_vests'): valid.extend([10, 13])
+                elif fname.startswith('safety_cones'): valid.extend([12])
+                elif fname.startswith('mask_wearing'): valid.extend([5, 9])
+                elif fname.startswith('safety_gloves'): valid.extend([1, 6])
+                elif fname.startswith('hard_hats'): valid.extend([3, 8])
+                elif fname.startswith('people_ladders'): valid.extend([4])
+                elif fname.startswith('fall_detection'): valid.extend([0])
+                else: valid = list(range(nc)) # No prefix, mask disabled
+
+                # Extract all classes present in the ground truth (gt) of the image, that due to mosaic could be 2x2 or 3x3
+                gt_classes_in_img = targets[targets[:, 0] == b_idx, 1].long().tolist()
+                for c_gt in gt_classes_in_img:
+                    valid.append(c_gt)  # always add the gt classes
+                    # if a ppe has negative class, we also add the counterpart class.
+                    if c_gt in (2, 7): valid.extend([2, 7])
+                    elif c_gt in (10, 13): valid.extend([10, 13])
+                    elif c_gt in (5, 9): valid.extend([5, 9])
+                    elif c_gt in (1, 6): valid.extend([1, 6])
+                    elif c_gt in (3, 8): valid.extend([3, 8])
+
+                valid = list(set(valid))  # remove duplicates
+                mask_row = torch.zeros(nc, device=device)
+                mask_row[valid] = 1.0
+                loss_mask[b_idx] = mask_row
+
             # Forward
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
-                    loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
+                    loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs, loss_mask) 
                 else:
-                    loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                    loss, loss_items = compute_loss(pred, targets.to(device), loss_mask) 
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:

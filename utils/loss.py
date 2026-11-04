@@ -427,7 +427,7 @@ class ComputeLoss:
         h = model.hyp  # hyperparameters
 
         # Define criteria
-        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device), reduction='none')
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
@@ -447,7 +447,7 @@ class ComputeLoss:
         for k in 'na', 'nc', 'nl', 'anchors':
             setattr(self, k, getattr(det, k))
 
-    def __call__(self, p, targets):  # predictions, targets, model
+    def __call__(self, p, targets, loss_mask=None):  # predictions, targets, model
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
@@ -476,7 +476,16 @@ class ComputeLoss:
                     t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
                     t[range(n), tcls[i]] = self.cp
                     #t[t==self.cp] = iou.detach().clamp(0).type(t.dtype)
-                    lcls += self.BCEcls(ps[:, 5:], t)  # BCE
+
+                    # Dynamic loss masking
+                    raw_cls_loss = self.BCEcls(ps[:, 5:], t) 
+                    
+                    if loss_mask is not None:
+                        batch_masks = loss_mask[b]
+                        raw_cls_loss = raw_cls_loss * batch_masks
+                        lcls += raw_cls_loss.sum() / batch_masks.sum().clamp(min=1.0)  # mean over masked elements
+                    else:
+                        lcls += raw_cls_loss.mean()
 
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
@@ -561,7 +570,7 @@ class ComputeLossOTA:
         h = model.hyp  # hyperparameters
 
         # Define criteria
-        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device), reduction='none')
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
@@ -579,7 +588,7 @@ class ComputeLossOTA:
         for k in 'na', 'nc', 'nl', 'anchors', 'stride':
             setattr(self, k, getattr(det, k))
 
-    def __call__(self, p, targets, imgs):  # predictions, targets, model   
+    def __call__(self, p, targets, imgs, loss_mask=None):  # predictions, targets, model   
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         bs, as_, gjs, gis, targets, anchors = self.build_targets(p, targets, imgs)
@@ -614,7 +623,16 @@ class ComputeLossOTA:
                 if self.nc > 1:  # cls loss (only if multiple classes)
                     t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
                     t[range(n), selected_tcls] = self.cp
-                    lcls += self.BCEcls(ps[:, 5:], t)  # BCE
+
+                    # Dynamic loss masking
+                    raw_cls_loss = self.BCEcls(ps[:, 5:], t) 
+                    
+                    if loss_mask is not None:
+                        batch_masks = loss_mask[b]
+                        raw_cls_loss = raw_cls_loss * batch_masks 
+                        lcls += raw_cls_loss.sum() / batch_masks.sum().clamp(min=1.0)  # mean over masked elements
+                    else:
+                        lcls += raw_cls_loss.mean()
 
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
@@ -1181,7 +1199,7 @@ class ComputeLossAuxOTA:
         h = model.hyp  # hyperparameters
 
         # Define criteria
-        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device), reduction='none')
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
@@ -1199,7 +1217,7 @@ class ComputeLossAuxOTA:
         for k in 'na', 'nc', 'nl', 'anchors', 'stride':
             setattr(self, k, getattr(det, k))
 
-    def __call__(self, p, targets, imgs):  # predictions, targets, model   
+    def __call__(self, p, targets, imgs, loss_mask=None):  # predictions, targets, model   
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         bs_aux, as_aux_, gjs_aux, gis_aux, targets_aux, anchors_aux = self.build_targets2(p[:self.nl], targets, imgs)
@@ -1239,7 +1257,16 @@ class ComputeLossAuxOTA:
                 if self.nc > 1:  # cls loss (only if multiple classes)
                     t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
                     t[range(n), selected_tcls] = self.cp
-                    lcls += self.BCEcls(ps[:, 5:], t)  # BCE
+
+                    # Dynamic loss masking (main head)
+                    raw_cls_loss = self.BCEcls(ps[:, 5:], t)  # BCE
+                    
+                    if loss_mask is not None:
+                        batch_masks = loss_mask[b]
+                        raw_cls_loss = raw_cls_loss * batch_masks
+                        lcls += raw_cls_loss.sum() / batch_masks.sum().clamp(min=1.0)
+                    else:
+                        lcls += raw_cls_loss.mean()
 
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
@@ -1266,7 +1293,16 @@ class ComputeLossAuxOTA:
                 if self.nc > 1:  # cls loss (only if multiple classes)
                     t_aux = torch.full_like(ps_aux[:, 5:], self.cn, device=device)  # targets
                     t_aux[range(n_aux), selected_tcls_aux] = self.cp
-                    lcls += 0.25 * self.BCEcls(ps_aux[:, 5:], t_aux)  # BCE
+
+                    # Dynamic loss masking (auxiliary head)
+                    raw_cls_loss_aux = self.BCEcls(ps_aux[:, 5:], t_aux)  # BCE
+                    
+                    if loss_mask is not None:
+                        batch_masks_aux = loss_mask[b_aux]
+                        raw_cls_loss_aux = raw_cls_loss_aux * batch_masks_aux
+                        lcls += 0.25 * (raw_cls_loss_aux.sum() / batch_masks_aux.sum().clamp(min=1.0))
+                    else:
+                        lcls += 0.25 * raw_cls_loss_aux.mean()
 
             obji = self.BCEobj(pi[..., 4], tobj)
             obji_aux = self.BCEobj(pi_aux[..., 4], tobj_aux)
